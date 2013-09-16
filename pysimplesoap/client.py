@@ -33,6 +33,12 @@ from .helpers import fetch, sort_dict, make_key, process_element, postprocess_el
 log = logging.getLogger(__name__)
 
 
+CASTABLE_TYPES = (
+    int, float, long, complex,
+    bool, str, unicode,
+)
+
+
 class SoapFault(RuntimeError):
     def __init__(self, faultcode, faultstring):
         self.faultcode = faultcode
@@ -213,7 +219,8 @@ class SoapClient(object):
 
     def send(self, method, xml):
         """Send SOAP request using HTTP"""
-        if self.location == 'test': return
+        if self.location == 'test':
+            return
         # location = '%s' % self.location #?op=%s" % (self.location, method)
         location = str(self.location)
 
@@ -336,24 +343,24 @@ class SoapClient(object):
         valid = True
 
         # Determine master type
-        masterisclass = False
-        typematch = type(master) == type(test)
-        if isinstance(master, OrderedDict) and isinstance(test, dict):
-            typematch = True
-        else:
-            # Is master a class? cannot use isinstance or issubclass to determine effectively
-            try:
-                masterisclass = str(type(master))[:7] == '<class '
-            except:
-                pass
+        masterisclass = isinstance(master, type)
+        typematch = masterisclass and isinstance(test, master)
 
-        if isinstance(master, type) or masterisclass:
-            # attempt to cast input to master type
-            try:
-                test = master(test)
-            except:
+        if not typematch and masterisclass:
+            if master in CASTABLE_TYPES:
+                # attempt to cast input to master type. This works on simple
+                # types (int, unicode, bool), but not everything.
+                try:
+                    test = master(test)
+                except:
+                    valid = False
+                    errors.append('Could not cast {test} ({test_type}) to {master}"'.format(
+                        test=test, test_type=type(test), master=master))
+
+            else:
+                # If the types do not match, and it is not castable, bail
                 valid = False
-                errors.append('type mismatch for value. master(%s): %s, test(%s): %s' % (type(master), master, type(test), test))
+                errors.append('type mismatch. master: %s, test(%s): %s' % (master, type(test), test))
 
         elif isinstance(master, list) and len(master) == 1 and not isinstance(test, list):
             # master can have a dict in a list: [{}] indicating a list is allowed, but not needed if only one argument.
@@ -363,42 +370,37 @@ class SoapClient(object):
             errors.extend(next_errors)
             warnings.extend(next_warnings)
 
-        elif not typematch:
-            valid = False
-            errors.append('type mismatch. master(%s): %s, test(%s): %s' % (type(master), master, type(test), test))
-
-        else:
+        elif isinstance(master, (dict, OrderedDict)):
             # traverse tree
-            if isinstance(master, dict) or isinstance(master, OrderedDict):
-                if master and test:
-                    for key in test:
-                        if key not in master:
-                            valid = False
-                            errors.append('Test key %s not in master. master: %s, test: %s' % (key, master, test))
-                        else:
-                            next_valid, next_errors, next_warnings = self.wsdl_validate_args_structure(master[key], test[key])
-                            if not next_valid:
-                                valid = False
-                            errors.extend(next_errors)
-                            warnings.extend(next_warnings)
-                    for key in master:
-                        if key not in test:
-                            warnings.append('Master key %s not in test. master: %s, test: %s' % (key, master, test))
-                elif master and not test:
-                    warnings.append('Master keys not in test. master: %s, test: %s' % (master, test))
-                elif not master and test:
-                    valid = False
-                    errors.append('Test keys not in master. master: %s, test: %s' % (master, test))
-                else:
-                    pass
-            elif isinstance(master, list):
-                master_list_value = master[0]
-                for item in test:
-                    next_valid, next_errors, next_warnings = self.wsdl_validate_args_structure(master_list_value, item)
-                    if not next_valid:
+            if master and test:
+                for key in test:
+                    if key not in master:
                         valid = False
-                    errors.extend(next_errors)
-                    warnings.extend(next_warnings)
+                        errors.append('Test key %s not in master. master: %s, test: %s' % (key, master, test))
+                    else:
+                        next_valid, next_errors, next_warnings = self.wsdl_validate_args_structure(master[key], test[key])
+                        if not next_valid:
+                            valid = False
+                        errors.extend(next_errors)
+                        warnings.extend(next_warnings)
+                for key in master:
+                    if key not in test:
+                        warnings.append('Master key %s not in test. master: %s, test: %s' % (key, master, test))
+            elif master and not test:
+                warnings.append('Master keys not in test. master: %s, test: %s' % (master, test))
+            elif not master and test:
+                valid = False
+                errors.append('Test keys not in master. master: %s, test: %s' % (master, test))
+            else:
+                pass
+        elif isinstance(master, list):
+            master_list_value = master[0]
+            for item in test:
+                next_valid, next_errors, next_warnings = self.wsdl_validate_args_structure(master_list_value, item)
+                if not next_valid:
+                    valid = False
+                errors.extend(next_errors)
+                warnings.extend(next_warnings)
 
         return (valid, errors, warnings)
 
